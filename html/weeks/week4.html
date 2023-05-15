@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Week 4</title>
+        <link rel="stylesheet" href="../../styles.css">
+
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+    </head>
+    <body> 
+        <input class="menu-icon" type="checkbox" id="menu-icon" name="menu-icon"/>
+          <label for="menu-icon"></label>
+          <nav class="nav"> 		
+              <ul class="pt-5">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../ps70.html">PS70</a></li>
+                <li><a href="../about.html">About</a></li>
+              </ul>
+          </nav>
+
+        
+        <div class="container" style="margin: 40px">
+            <h1>Week 4: Microcontroller Programming</h1>
+            <h3>Have you ever walked outside thinking it was warm and sunny, only to be hit with a sudden temperature drop and cold, wet, rain?</h3>
+            <br>
+            <h2>The weather in Cambridge is unpredictable. </h2>
+            <p>That's why you need a portable weather station that you can fit in your pocket! (and connect to a computer, through USB)</p>
+
+            <div class="container" style="text-align: center; ">
+                <img src="../../images/week4/IMG_1853.jpg" style="width:500px;" alt="weather stand as a whole"></img>
+                <video width="500px" autoplay muted>
+                    <source src="../../images/week4/IMG_1855.mp4" type="video/mp4">                
+                </video>    
+            </div>
+            <br><br>
+            <h4>Materials</h4>
+            <p>To create this portable weather station, you will need
+                <ul>
+                    <li>ESP32S2 or Arduino</li>
+                    <li>Adafruit BME280</li>
+                    <li>wires or pin to pin connectors</li>
+                    <li>Adafruit Color TFT display</li>
+                    <li>Soldering Iron and Solder</li>
+                    <li>Arduino IDE</li>
+                </ul>
+            </p>
+            <h4>How To</h4>
+            <p>
+                <ol>
+                    <li>
+                        To make the weather station, first solder the pins to the bme280. I would recommend putting the long 
+                        ends of the pins into the breadboard to secure the bme280 first before soldering it together. In this image, you can see that I 
+                        tried to use the little helping hands to hold the pins in place, but it was much easier just putting it in the board.
+                        <br>
+                        <br>
+                        <div class="container" style="text-align:center">
+                            <img src="../../images/week4/IMG_1852.jpg" style="width:500px;" alt="helping hands"></img>
+                        </div>
+                        <br><br>
+                    </li>
+                    <li>
+                        Then, connect the wires to the ESP32S2 or your microcontroller of choice using documentation like <a href="https://learn.adafruit.com/adafruit-bme280-humidity-barometric-pressure-temperature-sensor-breakout/assembly">this website!</a>
+                        <br>
+                        I connected VIN to 5V, GND to GND, SCK to pin 13, SDO to pin 12, SDI to pin 11, and CS to pin 10, which is the softare SPI wiring.
+                        <br><br>
+                        <div class="container" style="text-align:center">
+                            <img src="../../images/week4/IMG_1854.jpg" style="width:500px;" alt="wiring"></img>
+                        </div> 
+                        <br><br>
+                    </li>
+                    <li>
+                        In your Arduino IDE, use the following code in order to map your pins to the correct inputs and outputs, and then call the correct functions that you want to read the temperature. 
+                        This code will help test to make sure your bme280 is wired up correctly and also output the correct readings of the weather in the serial monitor.
+                        <pre>
+                            #include <Wire.h>
+                                #include <SPI.h>
+                                #include <Adafruit_Sensor.h>
+                                #include <Adafruit_BME280.h>
+                                
+                                #define BME_SCK 13
+                                #define BME_MISO 12
+                                #define BME_MOSI 11
+                                #define BME_CS 10
+                                
+                                #define SEALEVELPRESSURE_HPA (1013.25)
+                                
+                                // Adafruit_BME280 bme; // I2C
+                                //Adafruit_BME280 bme(BME_CS); // hardware SPI
+                                Adafruit_BME280 bme(BME_CS, BME_MOSI, BME_MISO, BME_SCK); // software SPI
+                                
+                                unsigned long delayTime;
+                                
+                                void setup() {
+                                    Serial.begin(9600);
+                                    while(!Serial);    // time to get serial running
+                                    Serial.println(F("BME280 test"));
+                                
+                                    unsigned status;
+                                    
+                                    // default settings
+                                    status = bme.begin();  
+                                    // You can also pass in a Wire library object like &Wire2
+                                    // status = bme.begin(0x76, &Wire2)
+                                    if (!status) {
+                                        Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
+                                        Serial.print("SensorID was: 0x"); Serial.println(bme.sensorID(),16);
+                                        Serial.print("        ID of 0xFF probably means a bad address, a BMP 180 or BMP 085\n");
+                                        Serial.print("   ID of 0x56-0x58 represents a BMP 280,\n");
+                                        Serial.print("        ID of 0x60 represents a BME 280.\n");
+                                        Serial.print("        ID of 0x61 represents a BME 680.\n");
+                                        while (1) delay(10);
+                                    }
+                                    
+                                    Serial.println("-- Default Test --");
+                                    delayTime = 5000;
+                                
+                                    Serial.println();
+                                }
+                                
+                                
+                                void loop() { 
+                                    printValues();
+                                    delay(delayTime);
+                                }
+                                
+                                
+                                void printValues() {
+                                    Serial.print("Temperature = ");
+                                    Serial.print(bme.readTemperature());
+                                    Serial.println(" °C");
+                                
+                                    Serial.print("Pressure = ");
+                                
+                                    Serial.print(bme.readPressure() / 100.0F);
+                                    Serial.println(" hPa");
+                                
+                                    Serial.print("Approx. Altitude = ");
+                                    Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
+                                    Serial.println(" m");
+                                
+                                    Serial.print("Humidity = ");
+                                    Serial.print(bme.readHumidity());
+                                    Serial.println(" %");
+                                
+                                    Serial.println();
+                                }
+                        </pre>
+                        <div class="container" style="text-align:center">
+                            <img src="../../images/week4/ss.png" style="width:300px;" alt="results"></img>
+                        </div>
+                        <br><br>
+                    </li>
+                    <li>
+                        The next step of this project would involve displaying the readings on the Color TFT Screen, but unfortunately I did not get the chance to figure that our in time.
+                        <br><br>
+                    </li>
+                </ol>
+            </p>
+        </div>
+    </body> 
+
+</html>

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Week 9</title>
+        <link rel="stylesheet" href="../../styles.css">
+
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+    </head>
+    <body> 
+        <input class="menu-icon" type="checkbox" id="menu-icon" name="menu-icon"/>
+          <label for="menu-icon"></label>
+          <nav class="nav"> 		
+              <ul class="pt-5">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../ps70.html">PS70</a></li>
+                <li><a href="../about.html">About</a></li>
+              </ul>
+          </nav>
+        
+        <div class="container" style="margin: 40px">
+            <h1>Week 9: IoT</h1>
+            <br>
+            <br>
+            <p> Are your friends cosntantly looking over your shoulder at your computer? Are you in need of a 
+                defense mechanism? Well, you're in luck!
+            </p>
+            
+            <h3>Facial Recognition Rubber Band Shooter</h3>
+            <p>
+                <br>
+                This week, Bobby, Lane, and I worked together to create a facial recognition rubber band shooter that takes
+                in the input from a computer camera, writes to a database, and then shoots a rubber band with a servo motor controlled mechanism after reading 
+                a value from the database.
+                <br>                <br>
+            </p>   
+            <h4>Materials:</h4>
+            <p>
+                <ul>
+                    <li>
+                        2 ESP32 S2 Microcontrollers
+                    </li>
+                    <li>
+                        Computer with camera
+                    </li>
+                    <li>
+                        Firebase Database
+                    </li>
+                    <li>
+                        1 Servo Motor mounted in wood
+                    </li>
+                    <li>
+                        1 Rubber Band
+                    </li>
+                    <li>
+                        Wires
+                    </li>
+                </ul>
+            </p>
+
+            <h4>Assembly</h4>
+            <h5>Rubber Band Shooting Mechanism</h5>
+            <p> Lane assembled the rubber band mechanism. To create one that can be controlled by a microcontroller, he attached
+                a servo motor with a spoked attachment to a piece of wood that would then stretch the rubber band out. The servo
+                was also connected to an ESP32 that would control it. See images below for details on how the mechanism was created.
+            </p>
+            <div class="container" style="text-align: center; ">
+                <img src="../../images/week9/a1.jpeg" style="width:300px;" alt="full image of mech"></img>
+                <img src="../../images/week9/a2.jpeg" style="width:300px;" alt="esp32"></img>
+                <img src="../../images/week9/a3.jpeg" style="width:300px;" alt="just wood and motor"></img>
+            </div>
+            <br>
+            <h5>Camera Facial Recognition Mechanism</h5>
+            <p> To create our input, which was a facial recognition system, Bobby first started out with the ESP CAM, but then switched to using the camera built into his computer, along with a python script.
+                
+            </p>
+           
+            <div class="container" style="text-align:center">
+                <img src="../../images/week9/facerec.jpeg" style="width:600px;" alt="bobby"></img>
+                <video width="400"  controls>
+                    <source src="../../images/week9/33.mp4" type="video/mp4">
+                </video>
+            </div>
+            
+            <br>
+            <h6>Face-Detection.py</h6>
+
+            <pre>
+                <code>
+                    import cv2
+                    import serial
+                    
+                    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+                    
+                    cap = cv2.VideoCapture(0)
+                    
+                    ser = serial.Serial('/dev/cu.usbserial-14120', 115200)
+                    
+                    while True:
+                        _,img = cap.read()
+                        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                        faces = face_cascade.detectMultiScale(gray, 1.1, 12)
+                    
+                        for (x,y,w,h) in faces:
+                            print(x,y,w,h)
+                            x = int(x)
+                            y = int(y)
+                            w = int(w)
+                            h = int(h)
+                    
+                            cv2.rectangle(img, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                    
+                        cv2.imshow('img', img)
+                        data = len(faces)
+                        ser.write(str(data).encode())
+                    
+                        k = cv2.waitKey(30) & 0xff
+                        if k == 27:
+                            break
+                    cap.release()
+                </code>
+            </pre>
+            <br>
+            <h5>Firebase and ESP communication</h5>
+            <p> I worked on the communication of the two ESP32's through a Firebase Realtime Database. To set up the Firebase RTDB, I followed <a href="https://randomnerdtutorials.com/esp32-firebase-realtime-database/">this tutorial</a> from Random Nerd Tutorials. The ESP32 connected to the facial recognition system
+                would write to the database a boolean value (either true or false) when it detected a face. The ESP32 connected to the servo motor would then read from the database
+                and if the value was true, it would shoot the rubber band. Below is the code for writing and reading to the database.
+            </p>
+            <br>
+            <h6>Writing to Database</h6>
+            <pre>
+                <code>
+                    // WRITE TO DATABASE
+
+                    #include <Arduino.h>
+                        #if defined(ESP32)
+                        #include <WiFi.h>
+                        #elif defined(ESP8266)
+                        #include <ESP8266WiFi.h>
+                        #endif
+                        #include <Firebase_ESP_Client.h>
+                        
+                        //Provide the token generation process info.
+                        #include "addons/TokenHelper.h"
+                        //Provide the RTDB payload printing info and other helper functions.
+                        #include "addons/RTDBHelper.h"
+                        
+                        // Insert your network credentials
+                        #define WIFI_SSID "MAKERSPACE"
+                        #define WIFI_PASSWORD "12345678"
+                        
+                        // Insert Firebase project API Key
+                        #define API_KEY "AIzaSyBHwyaBVBIYPsUAPQkU7nkF34QYDD51bRA"
+                        
+                        // Insert RTDB URLefine the RTDB URL */
+                        #define DATABASE_URL "https://esp32-rubberband-default-rtdb.firebaseio.com" 
+                        
+                        //Define Firebase Data object
+                        FirebaseData fbdo;
+                        
+                        FirebaseAuth auth;
+                        FirebaseConfig config;
+                        
+                        unsigned long sendDataPrevMillis = 0;
+                        int count = 0;
+                        bool signupOK = false;
+                        
+                        bool faceRecognized = false;
+                        
+                        void setup(){
+                          Serial.begin(115200);
+                          WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+                          Serial.print("Connecting to Wi-Fi");
+                          while (WiFi.status() != WL_CONNECTED){
+                            Serial.print(".");
+                            delay(300);
+                          }
+                          Serial.println();
+                          Serial.print("Connected with IP: ");
+                          Serial.println(WiFi.localIP());
+                          Serial.println();
+                        
+                          config.api_key = API_KEY;
+                        
+                          config.database_url = DATABASE_URL;
+                        
+                        
+                          if (Firebase.signUp(&config, &auth, "", "")){
+                            Serial.println("ok");
+                            signupOK = true;
+                        
+                        
+                          }
+                        
+                          else{
+                            Serial.printf("%s\n", config.signer.signupError.message.c_str());
+                          }
+                        
+                        
+                          config.token_status_callback = tokenStatusCallback; //see addons/TokenHelper.h
+                        
+                          Firebase.begin(&config, &auth);
+                          Firebase.reconnectWiFi(true);
+                        }
+                        
+                        void loop(){
+                        
+                          if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 3000 || sendDataPrevMillis == 0)){
+                            sendDataPrevMillis = millis();
+                        
+                        
+                          int sample = 0;
+                          int count = 0;
+                          while (count < 10) 
+                          {
+                            
+                            if (Serial.available()) {
+                              char data = Serial.read();
+                              sample += (int) data - '0';
+                              count += 1;
+                              // Do something with the received data
+                            }
+                          }
+                          Serial.println(sample / 10.0 > 0.6);
+                          if ((sample / 10.0) > 0.3 != faceRecognized)
+                            {
+                                faceRecognized = !faceRecognized;
+                        
+                                if (Firebase.RTDB.setBool(&fbdo, "test/bool", faceRecognized)){
+                                    Serial.println("PASSED");
+                                    Serial.println("PATH: " + fbdo.dataPath());
+                                    Serial.println("TYPE: " + fbdo.dataType());
+                                  }
+                                else {
+                                    Serial.println("FAILED");
+                                    Serial.println("REASON: " + fbdo.errorReason());
+                                  }
+                            }
+                            while (Serial.read() >= 0);
+                        
+                        
+                        
+                          }
+                        }
+                </code>
+            </pre>
+            <h6>Reading from Database</h6>
+            <pre>
+                <code>
+                    // READ FROM DATABASE
+                    #include <Arduino.h>
+                    #if defined(ESP32)
+                    #include <WiFi.h>
+                    #elif defined(ESP8266)
+                    #include <ESP8266WiFi.h>
+                    #endif
+                    #include <Firebase_ESP_Client.h>
+
+                    //Provide the token generation process info.
+                    #include "addons/TokenHelper.h"
+                    //Provide the RTDB payload printing info and other helper functions.
+                    #include "addons/RTDBHelper.h"
+
+                    // Insert your network credentials
+                    #define WIFI_SSID "MAKERSPACE"
+                    #define WIFI_PASSWORD "12345678"
+
+                    // Insert Firebase project API Key
+                    #define API_KEY "AIzaSyBHwyaBVBIYPsUAPQkU7nkF34QYDD51bRA"
+
+                    // Insert RTDB URLefine the RTDB URL */
+                    #define DATABASE_URL "https://esp32-rubberband-default-rtdb.firebaseio.com" 
+
+                    #include <ESP32Servo.h>
+
+                    //Define Firebase Data object
+                    FirebaseData fbdo;
+
+                    FirebaseAuth auth;
+                    FirebaseConfig config;
+
+                    unsigned long sendDataPrevMillis = 0;
+                    int intValue;
+                    float floatValue;
+                    bool signupOK = false;
+
+                    Servo myservo;
+
+                    int pos = 0;
+
+                    int servoPin = 17;
+                    int buttonPin = 15;
+
+                    unsigned long previousMillis = 0; 
+                    long OnTime = 100;
+                    long OffTime = 100;
+
+                    bool faceRecon;
+
+                    void setup() {
+                    Serial.begin(115200);
+                    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+                    Serial.print("Connecting to Wi-Fi");
+                    while (WiFi.status() != WL_CONNECTED) {
+                        Serial.print(".");
+                        delay(300);
+                    }
+                    Serial.println();
+                    Serial.print("Connected with IP: ");
+                    Serial.println(WiFi.localIP());
+                    Serial.println();
+
+                    /* Assign the api key (required) */
+                    config.api_key = API_KEY;
+
+                    /* Assign the RTDB URL (required) */
+                    config.database_url = DATABASE_URL;
+
+                    /* Sign up */
+                    if (Firebase.signUp(&config, &auth, "", "")) {
+                        Serial.println("ok");
+                        signupOK = true;
+                    }
+                    else {
+                        Serial.printf("%s\n", config.signer.signupError.message.c_str());
+                    }
+
+                    /* Assign the callback function for the long running token generation task */
+                    config.token_status_callback = tokenStatusCallback; //see addons/TokenHelper.h
+
+                    Firebase.begin(&config, &auth);
+                    Firebase.reconnectWiFi(true);
+
+                    ESP32PWM::allocateTimer(0);
+                    ESP32PWM::allocateTimer(1);
+                    ESP32PWM::allocateTimer(2);
+                    ESP32PWM::allocateTimer(3);
+                    myservo.setPeriodHertz(50);
+                    myservo.attach(servoPin, 1000, 2000);
+                    pinMode(buttonPin, INPUT_PULLUP);
+
+                    }
+
+                    void loop() {
+                    if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 2000 || sendDataPrevMillis == 0)) {
+                        sendDataPrevMillis = millis();
+                        Serial.println(sendDataPrevMillis);
+                        if (Firebase.RTDB.getBool(&fbdo, "/test/bool")){
+                        Serial.println(fbdo.dataType());
+                        if (fbdo.dataType() == "boolean") {
+                            faceRecon = fbdo.boolData();
+                            Serial.println(faceRecon);
+
+                            if (faceRecon == true){
+                                for (pos = 0; pos <= 180; pos += 2){
+                                myservo.write(pos);
+                                delay(10);      
+                                }
+                                for (pos = 180; pos >= 0; pos -= 2){
+                                myservo.write(pos);
+                                delay(10);          
+                                }
+                            }
+                            exit(0);
+                        }
+                        }
+                        else {
+                        Serial.println(fbdo.errorReason());
+                        }
+                    }
+                    }
+                </code>
+            </pre>
+
+            <p>
+                Here are screenshots of the database when it switches from false to true when detecting a face:
+            </p>
+            <div class="container" style="text-align: center; ">
+                <img src="../../images/week9/false.png" style="width:400px;" alt="false"></img>
+                <img src="../../images/week9/true.png" style="width:400px;" alt="true"></img>
+            </div>
+            <br>
+            <h5>All together now!</h5>
+            <p> When all connected, here's what the system does: </p>
+            <div class="container" style="text-align:center">
+                <video width="400"  controls>
+                    <source src="../../images/week9/final.mp4" type="video/mp4">
+                </video>
+            </div>
+
+        </div>
+    </body> 
+
+</html>

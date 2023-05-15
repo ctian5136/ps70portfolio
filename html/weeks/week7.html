@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Week 7</title>
+        <link rel="stylesheet" href="../../styles.css">
+
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+    </head>
+    <body> 
+        <input class="menu-icon" type="checkbox" id="menu-icon" name="menu-icon"/>
+          <label for="menu-icon"></label>
+          <nav class="nav"> 		
+              <ul class="pt-5">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../ps70.html">PS70</a></li>
+                <li><a href="../about.html">About</a></li>
+              </ul>
+          </nav>
+        
+        <div class="container" style="margin: 40px">
+            <h1>Week 7: Output Devices</h1>
+            <br>
+            <p>connecting off last week...</p>
+            <br>
+            <h3>RFID Lock</h3>
+            <p>This week, I built off of my project last week and incorporated a solenoid into the RFID system to make an RFID lock.
+                Despite the OLED already being an output device, I wanted another way to display whether someone had access or not. Because of 
+                time restrictions, I did not fully build a lock box, I simply hooked up the solenoid to the already existing system and 
+                controlled it via the RFID cards and reader from last week.
+            </p>
+            <h5>Materials Needed:</h5>
+            <p>
+                <ul>
+                    <li>ESP32-Mini</li>
+                    <li>RFID-RC522</li>
+                    <li>Breadboard</li>
+                    <li>Pin to Pin wires</li>
+                    <li>OLED display</li>
+                    <li>Arduino IDE</li>
+                    <li>Mini Solenoid</li>
+            </p>
+            <div class="container" style="text-align:center ;">
+                <img src="../../images/week7/IMG_3153.png" style="width:800px; text-align: center;" alt="false"></img>
+                <br>
+                <video width="400"  controls>
+                    <source src="../../images/week7/IMG_3151.mp4" type="video/mp4">
+                </video>
+            </div>
+            <br>
+            <p> The subtle clicking that you hear in the video is the solenoid engaging and disengaging. 
+                <br>
+                I think that I would love to get to develop this project a little further, maybe by making a little latch that the solenoid could hook into. 
+            </p>
+        </div>
+        
+    </body> 
+
+</html>
