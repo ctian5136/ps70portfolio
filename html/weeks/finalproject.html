@@ -111,7 +111,866 @@
                 <source src="../../images/final/smalliso.mp4" type="video/mp4">
             </video>
         <br><br>
+        
         </div>
+        <h5>Arduino IDE Motor Movement Code</h5>
+        <pre>
+            <code>
+                /* ---------------------------------
+ * Controls 2 steppers with ESP32 and CNC shield plus one servo for pen up/down
+ * for 4xiDraw machine  
+ *  
+ * code by misan, April 2018
+ * known to work on ESP32 Arducam UC406 board
+ *  
+ * serial 115200 and UDP & TCP 9999 accept g-code 
+ * board broadcasts itself on UDP till first connection
+ */  
+#define MAXI 30
+#define VERSION        (1)  // firmware version
+#define BAUD           (115200)  // How fast is the Arduino talking?
+#define MAX_BUF        (64)  // What is the longest message Arduino can store?
+#define STEPS_PER_TURN (3200)  // depends on your stepper motor.  most are 200.
+#define MAX_FEEDRATE   (15000) 
+#define MIN_FEEDRATE   (0.01)
+#define STEPX 14
+#define DIRX  12
+#define ENABLE T2
+#define STEPY 26
+#define DIRY  25
+#define STEPZ T6
+#define DIRZ  17
+#define SERVO 33
+#define STEPS_MM  16
+#include <ESP32_Servo.h>
+
+float Xmin = 0;
+float Xmax = 500;
+float Ymin = 0;
+float Ymax = 225;
+float Zmin = 0;
+float Zmax = 1;
+
+float Xpos = Xmin;
+float Ypos = Ymin;
+float Zpos = Zmax; 
+
+// Set to true to get debug output.
+boolean verbose = false;
+
+/* Structures, global variables    */
+struct point { 
+  float x; 
+  float y; 
+  float z; 
+};
+
+// Current position of plothead
+struct point actuatorPos;
+
+//  Drawing settings, should be OK
+float StepInc = 1;
+int StepDelay = 0;
+int LineDelay = 30;
+int penDelay = 50;
+
+hw_timer_t * timer = NULL; // stepper
+hw_timer_t * timer1 = NULL; // servo
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+int ACCEL =    1500 ;  // mm/s^2
+boolean flip = false;
+// for arc directions
+#define ARC_CW          (1)
+#define ARC_CCW         (-1)
+// Arcs are split into many line segments.  How long are the segments?
+#define MM_PER_SEGMENT  (1)
+
+
+#define LINE_BUFFER_LENGTH 512
+
+// Servo position for Up and Down 
+const int penZUp = 40;
+const int penZDown = 180;
+
+// Servo on PWM pin 6
+const int penServoPin = 32;
+
+// create servo object to control a servo 
+Servo penServo; 
+
+
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <WiFiClient.h>
+#include <WiFiServer.h>
+const char* SSID_NAME = "MAKERSPACE";  // WiFi AP SSID Name
+const char* SSID_PASS = "12345678"; // WiFi AP SSID Password
+WiFiUDP port;
+unsigned int localPort = 9999;
+WiFiServer server(9999);
+WiFiClient client;
+int i = 1;
+long last=0;
+int servo=1500;
+float factor, v2 = 0;
+long coast_steps=40000; // how many steps during coasting
+float t0=0.1;   // determines initial speed
+boolean diry,dirx;
+long over;
+double dx,dy;
+// interrupt triggered by timer expiring
+// motion will happen here based on a few variables
+volatile double cn=t0;
+volatile boolean busy = false;
+volatile int cs=0; // current step
+volatile long accel_steps=1000; // how many steps during acceleration
+volatile long total_steps=0; // total number of steps for the current movement
+
+void IRAM_ATTR itr1(void) { // servo interrupt
+  if(flip) {
+    digitalWrite(SERVO,LOW);
+    flip = false;
+    timerAlarmWrite(timer1, 5000, true); //timer1_write(20000 * 5); // 20 ms between pulses
+  }
+  else {
+    timerAlarmWrite(timer1, servo, true); //timer1_write(servo*5);
+    flip = true;
+    digitalWrite(SERVO,HIGH);
+  }
+}
+
+
+int k=0;
+void IRAM_ATTR itr (void) { // stepper interrupt
+  if( cs >= total_steps ) {busy = false; timerAlarmWrite(timer, 250000, true);  } // no more interrupts scheduled
+  else { // I have to move the motors
+    cs++;
+    if( cs < accel_steps ) {
+      // acceleration
+#ifdef SCURVE
+      if(cs<15) {k=15-cs; k*=k; }
+      else{
+       k=accel_steps-cs;
+       if (k<150) { k=150-k; k*=k; } else k=0; 
+      }
+#endif
+      cn = cn - (cn*2)/(4*cs+1+k);
+    }
+    else if ( cs < accel_steps + coast_steps ) {
+    // coast at max speed
+    }
+    else if(cs<total_steps) {
+      // deceleration  
+      cn = cn - (cn*2)/(4*(cs-total_steps)+1); 
+    }
+    timerAlarmWrite(timer, cn*250000L , true);
+    
+
+    if(dx>dy) {
+      //over=dx/2;
+      digitalWrite(STEPX, HIGH);
+      over+=dy;
+      if(over>=dx) {
+        over-=dx;
+        digitalWrite(STEPY, HIGH);
+      }
+      // delayMicroseconds(1);
+    } else {
+      //over=dy/2;
+      digitalWrite(STEPY, HIGH);
+      over+=dx;
+      if(over>=dy) {
+        over-=dy;
+        digitalWrite(STEPX, HIGH);
+      }
+      // delayMicroseconds(1);
+  }
+  digitalWrite(STEPY, LOW);
+  digitalWrite(STEPX , LOW);  
+  } 
+}
+
+//------------------------------------------------------------------------------
+// 2 Axis CNC Demo
+// dan@marginallycelver.com 2013-08-30
+//------------------------------------------------------------------------------
+// Copyright at end of file.
+// please see http://www.github.com/MarginallyClever/GcodeCNCDemo for more information.
+
+
+//------------------------------------------------------------------------------
+// GLOBALS
+//------------------------------------------------------------------------------
+
+char buffer[MAX_BUF];  // where we store the message until we get a newline
+int sofar;  // how much is in the buffer
+
+float px, py;  // location
+
+// speeds
+float fr=1000;  // human version
+long step_delay;  // machine version
+
+// settings
+char mode_abs=1;  // absolute mode?
+
+
+//------------------------------------------------------------------------------
+// METHODS
+//------------------------------------------------------------------------------
+
+
+/**
+ * delay for the appropriate number of microseconds
+ * @input ms how many milliseconds to wait
+ */
+void pause(long ms) {
+  delay(ms/1000);
+  delayMicroseconds(ms%1000);  // delayMicroseconds doesn't work for values > ~16k.
+}
+
+
+/**
+ * Set the feedrate (speed motors will move)
+ * @input nfr the new speed in steps/second
+ */
+void feedrate(float nfr) {
+  if(fr==nfr) return;  // same as last time?  quit now.
+  if(nfr>MAX_FEEDRATE || nfr<MIN_FEEDRATE) {  // don't allow crazy feed rates
+    Serial.print(F("New feedrate must be greater than "));
+    Serial.print(MIN_FEEDRATE);
+    Serial.print(F("steps/s and less than "));
+    Serial.print(MAX_FEEDRATE);
+    Serial.println(F("steps/s."));
+    return;
+  }
+  step_delay = 1000000.0/nfr;
+  fr=nfr;
+  cn = t0 = sqrt( 2.0 /** STEPS_MM*/ / ACCEL );
+}
+
+
+/**
+ * Set the logical position
+ * @input npx new position x
+ * @input npy new position y
+ */
+void position(float npx,float npy) {
+  // here is a good place to add sanity tests
+  px=npx;
+  py=npy;
+}
+
+//#define max(a,b) ((a)>(b)?(a):(b))
+
+/**
+ * Uses bresenham's line algorithm to move both motors
+ * @input newx the destination x position
+ * @input newy the destination y position
+ **/
+void drawLine(float newx,float newy) {
+  dx=newx-px;
+  dy=newy-py;
+  dirx=dx>0;
+  diry=dy>0;  // because the motors are mounted in opposite directions
+  dx=abs(dx);
+  dy=abs(dy);
+//  Serial.print("line: ");Serial.print(dx); Serial.print(","); Serial.println(dy);
+//  move(dx,dirx,dy,diry);
+  long i;
+  over=0;
+
+  total_steps = _max ( dx, dy ) * STEPS_MM; 
+  float ta = fr / 60.0 / ACCEL;
+  float ea = ( fr / 60.0 ) * ta / 2 ;
+  accel_steps = _min(ea * STEPS_MM , total_steps/2); // just in case feedrate cannot be reached 
+  coast_steps = total_steps - accel_steps * 2; // acceleration
+  digitalWrite(DIRX, dirx); // direction of X motor
+  digitalWrite(DIRY, diry);
+  cs = 0; // let the motion start :-)
+  cn = t0;
+  
+  if(dx>dy) over=dx/2; else over=dy/2;
+  busy=true;
+  // wait till the command ends
+  while(busy) { /*doServo();*/  yield(); }
+  px=newx;
+  py=newy;
+}
+
+
+// returns angle of dy/dx as a value from 0...2PI
+float atan3(float dy,float dx) {
+  float a=atan2(dy,dx);
+  if(a<0) a=(PI*2.0)+a;
+  return a;
+}
+
+
+// This method assumes the limits have already been checked.
+// This method assumes the start and end radius match.
+// This method assumes arcs are not >180 degrees (PI radians)
+// cx/cy - center of circle
+// x/y - end position
+// dir - ARC_CW or ARC_CCW to control direction of arc
+void arc(float cx,float cy,float x,float y,float dir) {
+  // get radius
+  float dx = px - cx;
+  float dy = py - cy;
+  float radius=sqrt(dx*dx+dy*dy);
+
+  // find angle of arc (sweep)
+  float angle1=atan3(dy,dx);
+  float angle2=atan3(y-cy,x-cx);
+  float theta=angle2-angle1;
+  
+  if(dir>0 && theta<0) angle2+=2*PI;
+  else if(dir<0 && theta>0) angle1+=2*PI;
+  
+  theta=angle2-angle1;
+  
+  // get length of arc
+  // float circ=PI*2.0*radius;
+  // float len=theta*circ/(PI*2.0);
+  // simplifies to
+  float len = abs(theta) * radius;
+
+  int i, segments = ceil( len * MM_PER_SEGMENT );
+ 
+  float nx, ny, angle3, scale;
+
+  for(i=0;i<segments;++i) {
+    // interpolate around the arc
+    scale = ((float)i)/((float)segments);
+    
+    angle3 = ( theta * scale ) + angle1;
+    nx = cx + cos(angle3) * radius;
+    ny = cy + sin(angle3) * radius;
+    // send it to the planner
+    drawLine(nx,ny);
+  }
+  
+  drawLine(x,y);
+}
+
+
+//  Raises pen
+void penUp() { 
+  penServo.write(penZUp); 
+  delay(LineDelay); 
+  Zpos=Zmax; 
+  if (verbose) { 
+    Serial.println("Pen up!"); 
+  } 
+}
+//  Lowers pen
+void penDown() { 
+  penServo.write(penZDown); 
+  delay(LineDelay); 
+  Zpos=Zmin; 
+  if (verbose) { 
+    Serial.println("Pen down."); 
+  } 
+}
+
+
+
+/**
+ * Look for character /code/ in the buffer and read the float that immediately follows it.
+ * @return the value found.  If nothing is found, /val/ is returned.
+ * @input code the character to look for.
+ * @input val the return value if /code/ is not found.
+ **/
+float parsenumber(char code,float val) {
+  char *ptr=buffer;
+  while(ptr && *ptr && ptr<buffer+sofar) {
+    if(*ptr==code) {
+      return atof(ptr+1);
+    }
+    ptr++; //ptr=strchr(ptr,' ')+1;
+  }
+  return val;
+} 
+
+
+/**
+ * write a string followed by a float to the serial line.  Convenient for debugging.
+ * @input code the string.
+ * @input val the float.
+ */
+void output(const char *code,float val) {
+  Serial.print(code);
+  Serial.println(val);
+}
+
+
+/**
+ * print the current position, feedrate, and absolute mode.
+ */
+void where() {
+  output("X",px);
+  output("Y",py);
+  output("F",fr);
+  Serial.println(mode_abs?"ABS":"REL");
+} 
+
+
+/**
+ * display helpful information
+ */
+void help() {
+  Serial.print(F("GcodeCNCDemo2AxisV1 "));
+  Serial.println(VERSION);
+  Serial.println(F("Commands:"));
+  Serial.println(F("G00 [X(steps)] [Y(steps)] [F(feedrate)]; - line"));
+  Serial.println(F("G01 [X(steps)] [Y(steps)] [F(feedrate)]; - line"));
+  Serial.println(F("G02 [X(steps)] [Y(steps)] [I(steps)] [J(steps)] [F(feedrate)]; - clockwise arc"));
+  Serial.println(F("G03 [X(steps)] [Y(steps)] [I(steps)] [J(steps)] [F(feedrate)]; - counter-clockwise arc"));
+  Serial.println(F("G04 P[seconds]; - delay"));
+  Serial.println(F("G90; - absolute mode"));
+  Serial.println(F("G91; - relative mode"));
+  Serial.println(F("G92 [X(steps)] [Y(steps)]; - change logical position"));
+  Serial.println(F("M18; - disable motors"));
+  Serial.println(F("M100; - this help message"));
+  Serial.println(F("M114; - report position and feedrate"));
+  Serial.println(F("All commands must end with a newline."));
+}
+
+
+/**
+ * Read the input buffer and find any recognized commands.  One G or M command per line.
+ */
+void processIncomingLine( char* line, int charNB ) {
+  int currentIndex = 0;
+  char buffer[ 64 ];                                 // Hope that 64 is enough for 1 parameter
+  struct point newPos;
+
+  newPos.x = 0.0;
+  newPos.y = 0.0;
+
+  //  Needs to interpret 
+  //  G1 for moving
+  //  G4 P300 (wait 150ms)
+  //  G1 X60 Y30
+  //  G1 X30 Y50
+  //  M300 S30 (pen down)
+  //  M300 S50 (pen up)
+  //  Discard anything with a (
+  //  Discard any other command!
+
+  while( currentIndex < charNB ) {
+    switch ( line[ currentIndex++ ] ) {              // Select command, if any
+    case 'U':
+      penUp(); 
+      break;
+    case 'D':
+      penDown(); 
+      break;
+    case 'G':
+      buffer[0] = line[ currentIndex++ ];          // /!\ Dirty - Only works with 2 digit commands
+      //      buffer[1] = line[ currentIndex++ ];
+      //      buffer[2] = '\0';
+      buffer[1] = '\0';
+
+      switch ( atoi( buffer ) ){                   // Select G command
+      case 0: 
+      {
+        penUp();
+        // /!\ Dirty - Suppose that X is before Y
+        char* indexX = strchr( line+currentIndex, 'X' );  // Get X/Y position in the string (if any)
+        char* indexY = strchr( line+currentIndex, 'Y' );
+        if ( indexY <= 0 ) {
+          newPos.x = atof( indexX + 1); 
+          newPos.y = actuatorPos.y;
+        } 
+        else if ( indexX <= 0 ) {
+          newPos.y = atof( indexY + 1);
+          newPos.x = actuatorPos.x;
+        } 
+        else {
+          newPos.y = atof( indexY + 1);
+          indexY = (char*)'\0';
+          newPos.x = atof( indexX + 1);
+        }
+        drawLine(newPos.x, newPos.y );
+        //        Serial.println("ok");
+        actuatorPos.x = newPos.x;
+        actuatorPos.y = newPos.y;
+        penDown();
+        break;
+      }
+        
+                                          // G00 & G01 - Movement or fast movement. Same here
+      case 1:
+        // /!\ Dirty - Suppose that X is before Y
+        char* indexX1 = strchr( line+currentIndex, 'X' );  // Get X/Y position in the string (if any)
+        char* indexY1 = strchr( line+currentIndex, 'Y' );
+        if ( indexY1 <= 0 ) {
+          newPos.x = atof( indexX1 + 1); 
+          newPos.y = actuatorPos.y;
+        } 
+        else if ( indexX1 <= 0 ) {
+          newPos.y = atof( indexY1 + 1);
+          newPos.x = actuatorPos.x;
+        } 
+        else {
+          newPos.y = atof( indexY1 + 1);
+          indexY1 = (char*)'\0';
+          newPos.x = atof( indexX1 + 1);
+        }
+        drawLine(newPos.x, newPos.y );
+        //        Serial.println("ok");
+        actuatorPos.x = newPos.x;
+        actuatorPos.y = newPos.y;
+        break;
+      }
+      break;
+    case 'M':
+      buffer[0] = line[ currentIndex++ ];        // /!\ Dirty - Only works with 3 digit commands
+      buffer[1] = line[ currentIndex++ ];
+      buffer[2] = line[ currentIndex++ ];
+      buffer[3] = '\0';
+      switch ( atoi( buffer ) ){
+      case 300:
+        {
+          char* indexS = strchr( line+currentIndex, 'S' );
+          float Spos = atof( indexS + 1);
+          //          Serial.println("ok");
+          if (Spos == 30) { 
+            penDown(); 
+          }
+          if (Spos == 50) { 
+            penUp(); 
+          }
+          break;
+        }
+      case 114:                                // M114 - Repport position
+        Serial.print( "Absolute position : X = " );
+        Serial.print( actuatorPos.x );
+        Serial.print( "  -  Y = " );
+        Serial.println( actuatorPos.y );
+        break;
+      default:
+        Serial.print( "Command not recognized : M");
+        Serial.println( buffer );
+      }
+    }
+  }
+}
+
+// void processCommand() {
+//   int cmd = parsenumber('G',-1); 
+//   switch(cmd) {
+//   case  0:
+//   case  1: { // line
+//     feedrate(parsenumber('F',fr));
+//     line( parsenumber('X',(mode_abs?px:0)) + (mode_abs?0:px),
+//           parsenumber('Y',(mode_abs?py:0)) + (mode_abs?0:py) );
+//     break;
+//     }
+//   case 2:
+//   case 3: {  // arc
+//       feedrate(parsenumber('F',fr));
+//       arc(parsenumber('I',(mode_abs?px:0)) + (mode_abs?0:px),
+//           parsenumber('J',(mode_abs?py:0)) + (mode_abs?0:py),
+//           parsenumber('X',(mode_abs?px:0)) + (mode_abs?0:px),
+//           parsenumber('Y',(mode_abs?py:0)) + (mode_abs?0:py),
+//           (cmd==2) ? -1 : 1);
+//       break;
+//     }
+//   case  4:  pause(parsenumber('P',0)*1000);  break;  // dwell
+//   case 90:  mode_abs=1;  break;  // absolute mode
+//   case 91:  mode_abs=0;  break;  // relative mode
+//   case 92:  // set logical position
+//     position( parsenumber('X',0),
+//               parsenumber('Y',0) );
+//     break;
+//   default:  break;
+//   }
+
+//   cmd = parsenumber('M',-1); 
+//   switch(cmd) {
+//   case 3:servo = ( parsenumber('S',1500) ); break; // sets the servo value in microseconds, it only works while inside loop :-(
+//   case 18:  // disable motors
+// //    disable();
+//     break;
+//   case 100:  help();  break;
+//   case 114:  where();  break;
+//   case 201: ACCEL = parsenumber('A',0); feedrate(fr); Serial.print(ACCEL); break; // M201 A<accel> change acceleration
+//   default:  break;
+//   }
+// }
+
+
+/**
+ * prepares the input buffer to receive a new message and tells the serial connected device it is ready for more.
+ */
+void ready() {
+  sofar=0;  // clear input buffer
+  Serial.print(F(">"));  // signal ready to receive input
+}
+
+
+
+void setup() {
+  pinMode(STEPX, OUTPUT);  // stepX
+  pinMode(DIRX, OUTPUT); //dirX
+  pinMode(ENABLE, OUTPUT); // enable
+  pinMode(STEPY, OUTPUT); // stepY
+  pinMode(DIRY, OUTPUT); // dirY
+
+  penServo.attach(penServoPin);
+  penServo.write(penZUp);
+  delay(200);
+
+  Serial.begin(115200);  // open coms
+
+  //  setup_controller();  
+  position(0,0);  // set staring position
+  feedrate((MAX_FEEDRATE + MIN_FEEDRATE)/2);  // set default speed
+  
+  timer = timerBegin(0, 80, true);
+  timerAttachInterrupt(timer, &itr, true);
+  timerAlarmWrite(timer, 1000000, true);
+  timerAlarmEnable(timer);
+  
+  timer1 = timerBegin(1, 80, true);
+  timerAttachInterrupt(timer1, &itr1, true);
+  timerAlarmWrite(timer1, 20000, true);
+  timerAlarmEnable(timer1);
+  
+}
+
+
+// char c;
+// long lastping;
+
+void loop() {
+  char line[ LINE_BUFFER_LENGTH ];
+  char c;
+  int lineIndex;
+  bool lineIsComment, lineSemiColon;
+
+  lineIndex = 0;
+  lineSemiColon = false;
+  lineIsComment = false;
+
+  while (1) {
+
+    // Serial reception - Mostly from Grbl, added semicolon support
+    while ( Serial.available()>0 ) {
+      c = Serial.read();
+      if (( c == '\n') || (c == '\r') ) {             // End of line reached
+        if ( lineIndex > 0 ) {                        // Line is complete. Then execute!
+          line[ lineIndex ] = '\0';                   // Terminate string
+          if (verbose) { 
+            Serial.print( "Received : "); 
+            Serial.println( line ); 
+          }
+          processIncomingLine( line, lineIndex );
+          lineIndex = 0;
+        } 
+        else { 
+          // Empty or comment line. Skip block.
+        }
+        lineIsComment = false;
+        lineSemiColon = false;
+        Serial.println("ok");    
+      } 
+      // PARSING THE SERIAL COMMANDS
+      else {                              
+        if ( (lineIsComment) || (lineSemiColon) ) {   // Throw away all comment characters
+          if ( c == ')' )  lineIsComment = false;     // End of comment. Resume line.
+        } 
+        else {
+          if ( c <= ' ' ) {                           // Throw away whitepace and control characters
+          } 
+          else if ( c == '/' ) {                    // Block delete not supported. Ignore character.
+          } 
+          else if ( c == '(' ) {                    // Enable comments flag and ignore all characters until ')' or EOL.
+            lineIsComment = true;
+          } 
+          else if ( c == ';' ) {
+            lineSemiColon = true;
+          } 
+          else if ( lineIndex >= LINE_BUFFER_LENGTH-1 ) {
+            Serial.println( "ERROR - lineBuffer overflow" );
+            lineIsComment = false;
+            lineSemiColon = false;
+          } 
+          else if ( c >= 'a' && c <= 'z' ) {        // Upcase lowercase
+            line[ lineIndex++ ] = c-'a'+'A';
+          } 
+          else {
+            line[ lineIndex++ ] = c;
+          }
+        }
+      }
+    }
+  }
+}
+
+            </code>
+        </pre>
+        <br><br>
+        <h5>Processng Gcode Sending Code</h5>
+        <pre>
+            <code>
+                import java.awt.event.KeyEvent;
+import javax.swing.JOptionPane;
+import processing.serial.*;
+
+Serial port = null;
+
+// select and modify the appropriate line for your operating system
+// leave as null to use interactive port (press 'p' in the program)
+String portname = null;
+//String portname = Serial.list()[0]; // Mac OS X
+//String portname = "/dev/ttyUSB0"; // Linux
+//String portname = "COM6"; // Windows
+
+boolean streaming = false;
+float speed = 0.001;
+String[] gcode;
+int i = 0;
+
+void openSerialPort()
+{
+  if (portname == null) return;
+  if (port != null) port.stop();
+  
+  port = new Serial(this, portname, 115200);
+  
+  port.bufferUntil('\n');
+}
+
+void selectSerialPort()
+{
+  String result = (String) JOptionPane.showInputDialog(frame,
+    "Select the serial port that corresponds to your Arduino board.",
+    "Select serial port",
+    JOptionPane.QUESTION_MESSAGE,
+    null,
+    Serial.list(),
+    0);
+    
+  if (result != null) {
+    portname = result;
+    openSerialPort();
+  }
+}
+
+void setup()
+{
+  size(600, 400);
+  openSerialPort();
+}
+
+void draw()
+{
+  background(155);  
+  fill(0);
+  int y = 24, dy = 12;
+  text("INSTRUCTIONS", 12, y); y += dy;
+  text("p: select serial port", 12, y); y += dy;
+  text("1: set speed to 0.001 inches (1 mil) per jog", 12, y); y += dy;
+  text("2: set speed to 0.010 inches (10 mil) per jog", 12, y); y += dy;
+  text("3: set speed to 0.100 inches (100 mil) per jog", 12, y); y += dy;
+  text("arrow keys: jog in x-y plane", 12, y); y += dy;
+  text("page up & page down: jog in z axis", 12, y); y += dy;
+  text("$: display grbl settings", 12, y); y+= dy;
+  text("h: go home", 12, y); y += dy;
+  text("0: zero machine (set home to the current location)", 12, y); y += dy;
+  text("u: pen up", 12, y); y += dy;
+  text("d: pen down", 12, y); y += dy;
+
+  text("g: stream a g-code file", 12, y); y += dy;
+  text("x: stop streaming g-code (this is NOT immediate)", 12, y); y += dy;
+  y = height - dy;
+  text("current jog speed: " + speed + " inches per step", 12, y); y -= dy;
+  text("current serial port: " + portname, 12, y); y -= dy;
+}
+
+void keyPressed()
+{
+  if (key == '1') speed = 0.001;
+  if (key == '2') speed = 0.01;
+  if (key == '3') speed = 0.1;
+  
+  if (!streaming) {
+    if (keyCode == LEFT) port.write("G91\nG20\nG00 X-" + speed + " Y0.000 Z0.000\n");
+    if (keyCode == RIGHT) port.write("G91\nG20\nG00 X" + speed + " Y0.000 Z0.000\n");
+    if (keyCode == UP) port.write("G91\nG20\nG00 X0.000 Y" + speed + " Z0.000\n");
+    if (keyCode == DOWN) port.write("G91\nG20\nG00 X0.000 Y-" + speed + " Z0.000\n");
+    if (keyCode == KeyEvent.VK_PAGE_UP) port.write("G91\nG20\nG00 X0.000 Y0.000 Z" + speed + "\n");
+    if (keyCode == KeyEvent.VK_PAGE_DOWN) port.write("G91\nG20\nG00 X0.000 Y0.000 Z-" + speed + "\n");
+    if (key == 'h') port.write("G90\nG20\nG00 X0.000 Y0.000 Z0.000\n");
+    if (key == 'v') port.write("$0=75\n$1=74\n$2=75\n");
+    //if (key == 'v') port.write("$0=100\n$1=74\n$2=75\n");
+    if (key == 's') port.write("$3=10\n");
+    if (key == 'e') port.write("$16=1\n");
+    if (key == 'd') port.write("D");
+    if (key == 'u') port.write("U");
+    if (key == '0') openSerialPort();
+    if (key == 'p') selectSerialPort();
+    if (key == '$') port.write("$$\n");
+  }
+  
+  if (!streaming && key == 'g') {
+    gcode = null; i = 0;
+    File file = null; 
+    println("Loading file...");
+    selectInput("Select a file to process:", "fileSelected", file);
+  }
+  
+  if (key == 'x') streaming = false;
+}
+
+void fileSelected(File selection) {
+  if (selection == null) {
+    println("Window was closed or the user hit cancel.");
+  } else {
+    println("User selected " + selection.getAbsolutePath());
+    gcode = loadStrings(selection.getAbsolutePath());
+    if (gcode == null) return;
+    streaming = true;
+    stream();
+  }
+}
+
+void stream()
+{
+  if (!streaming) return;
+  
+  while (true) {
+    System.out.println("streaming");
+    if (i == gcode.length) {
+      streaming = false;
+      return;
+    }
+    
+    if (gcode[i].trim().length() == 0) i++;
+    else break;
+  }
+  
+  println(gcode[i]);
+  port.write(gcode[i] + '\n');
+  i++;
+}
+
+void serialEvent(Serial p)
+{
+  String s = p.readStringUntil('\n');
+  println(s.trim());
+  
+  if (s.trim().startsWith("ok")) stream();
+  if (s.trim().startsWith("error")) stream(); // XXX: really?
+}
+            </code>
+        </pre>
+
+        <br><br>
+
         <h3>Integration</h3>
         <p>
             Because I was using 3D printed parts from another guy's project, most of the project was already integrated, ie. the motor mounts and shields. 
